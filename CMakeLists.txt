@@ -4,8 +4,8 @@ project(apriltag VERSION 3.4.5 LANGUAGES C)
 if(POLICY CMP0077)
     cmake_policy(SET CMP0077 NEW)
 endif()
-option(BUILD_SHARED_LIBS "Build shared libraries" ON)
-option(BUILD_EXAMPLES "Build example executables" ON)
+option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
+option(BUILD_EXAMPLES "Build example executables" OFF)
 option(ASAN "Use AddressSanitizer for debug builds to detect memory issues" OFF)
 
 if (ASAN)
@@ -106,62 +106,64 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>/apriltag")
 
 
-# install header file hierarchy
-file(GLOB HEADER_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.h common/*.h)
-list(REMOVE_ITEM HEADER_FILES apriltag_detect.docstring.h apriltag_py_type.docstring.h)
+if(NOT SKBUILD)
+    # install header file hierarchy
+    file(GLOB HEADER_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.h common/*.h)
+    list(REMOVE_ITEM HEADER_FILES apriltag_detect.docstring.h apriltag_py_type.docstring.h)
 
-foreach(HEADER ${HEADER_FILES})
-    string(REGEX MATCH "(.*)[/\\]" DIR ${HEADER})
-    install(FILES ${HEADER} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/${DIR})
-endforeach()
+    foreach(HEADER ${HEADER_FILES})
+        string(REGEX MATCH "(.*)[/\\]" DIR ${HEADER})
+        install(FILES ${HEADER} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/${DIR})
+    endforeach()
 
-# export library
-set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
-set(version_config "${generated_dir}/${PROJECT_NAME}ConfigVersion.cmake")
-set(project_config "${generated_dir}/${PROJECT_NAME}Config.cmake")
-set(targets_export_name "${PROJECT_NAME}Targets")
-set(config_install_dir "${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/cmake")
+    # export library
+    set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(version_config "${generated_dir}/${PROJECT_NAME}ConfigVersion.cmake")
+    set(project_config "${generated_dir}/${PROJECT_NAME}Config.cmake")
+    set(targets_export_name "${PROJECT_NAME}Targets")
+    set(config_install_dir "${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/cmake")
 
-# Include module with fuction 'write_basic_package_version_file'
-include(CMakePackageConfigHelpers)
+    # Include module with fuction 'write_basic_package_version_file'
+    include(CMakePackageConfigHelpers)
 
-# Configure '<PROJECT-NAME>Config.cmake'
-# Use variables:
-#   * targets_export_name
-#   * PROJECT_NAME
-configure_package_config_file(
-        "CMake/apriltagConfig.cmake.in"
-        "${project_config}"
-        INSTALL_DESTINATION "${config_install_dir}"
-)
+    # Configure '<PROJECT-NAME>Config.cmake'
+    # Use variables:
+    #   * targets_export_name
+    #   * PROJECT_NAME
+    configure_package_config_file(
+            "CMake/apriltagConfig.cmake.in"
+            "${project_config}"
+            INSTALL_DESTINATION "${config_install_dir}"
+    )
 
-# Configure '<PROJECT-NAME>ConfigVersion.cmake'
-# Note: PROJECT_VERSION is used as a VERSION
-write_basic_package_version_file("${version_config}" COMPATIBILITY SameMajorVersion)
-
-
-# install library
-install(TARGETS ${PROJECT_NAME} EXPORT ${targets_export_name}
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        )
-
-install(EXPORT ${targets_export_name}
-    NAMESPACE apriltag::
-    DESTINATION ${config_install_dir})
-
-install(FILES ${project_config} ${version_config} DESTINATION ${config_install_dir})
-
-export(TARGETS apriltag
-    NAMESPACE apriltag::
-    FILE ${generated_dir}/${targets_export_name}.cmake)
+    # Configure '<PROJECT-NAME>ConfigVersion.cmake'
+    # Note: PROJECT_VERSION is used as a VERSION
+    write_basic_package_version_file("${version_config}" COMPATIBILITY SameMajorVersion)
 
 
-# install pkgconfig file
-configure_file(${PROJECT_NAME}.pc.in ${PROJECT_NAME}.pc @ONLY)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+    # install library
+    install(TARGETS ${PROJECT_NAME} EXPORT ${targets_export_name}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            )
+
+    install(EXPORT ${targets_export_name}
+        NAMESPACE apriltag::
+        DESTINATION ${config_install_dir})
+
+    install(FILES ${project_config} ${version_config} DESTINATION ${config_install_dir})
+
+    export(TARGETS apriltag
+        NAMESPACE apriltag::
+        FILE ${generated_dir}/${targets_export_name}.cmake)
+
+
+    # install pkgconfig file
+    configure_file(${PROJECT_NAME}.pc.in ${PROJECT_NAME}.pc @ONLY)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+endif()
 
 
 # Python wrapper
@@ -193,7 +195,11 @@ if(BUILD_PYTHON_WRAPPER AND Python3_Development_FOUND AND Python3_NumPy_FOUND)
     target_link_libraries(${apriltag_py_target} PRIVATE apriltag Python3::NumPy)
     target_include_directories(${apriltag_py_target} PRIVATE ${PROJECT_BINARY_DIR})
 
-    set(PY_DEST ${CMAKE_INSTALL_PREFIX}/lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages/)
+    if(NOT SKBUILD)
+        set(PY_DEST ${CMAKE_INSTALL_PREFIX}/lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages/)
+    else()
+        set(PY_DEST .)
+    endif()
     install(TARGETS ${apriltag_py_target} LIBRARY DESTINATION ${PY_DEST})
 elseif(BUILD_PYTHON_WRAPPER)
     message(WARNING
