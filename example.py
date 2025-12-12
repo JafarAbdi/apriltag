@@ -226,16 +226,105 @@ def estimate_pose_opencv(detection, camera_matrix, tag_size):
     # Get detected corners
     image_points = detection["lb-rb-rt-lt"].astype(np.float64)
 
-    # Solve PnP
+    # Solve PnP using IPPE_SQUARE (optimized for square planar markers)
     dist_coeffs = np.zeros(4)  # Assuming no distortion
-    success, rvec, tvec = cv2.solvePnP(
+    retval, rvecs, tvecs, reprojection_errors = cv2.solvePnPGeneric(
         object_points,
         image_points,
         camera_matrix,
         dist_coeffs,
+        flags=cv2.SOLVEPNP_IPPE_SQUARE,
     )
 
-    return (rvec, tvec) if success else (None, None)
+    if retval == 0 or len(rvecs) == 0:
+        return (None, None)
+
+    # IPPE_SQUARE returns up to 2 solutions, first one has lower reprojection error
+    return (rvecs[0], tvecs[0])
+
+
+def visualize_poses_opencv(image_path, camera_params, tag_size=0.1):
+    """
+    Detect tags and visualize poses using OpenCV's solvePnP.
+
+    Parameters:
+        image_path : path-like
+            Path to input image.
+        camera_params : tuple of 4 floats
+            Camera intrinsic parameters (fx, fy, cx, cy) in pixels.
+        tag_size : float
+            Physical size of the tag in meters.
+
+    Returns:
+        image_color : numpy.ndarray
+            Image with pose axes drawn.
+        results : list of dict
+            Pose results for each detected tag.
+    """
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    detector = apriltag("tag36h11")
+    detections = detector.detect(image)
+
+    image_color = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    fx, fy, cx, cy = camera_params
+    camera_matrix = np.array([
+        [fx, 0, cx],
+        [0, fy, cy],
+        [0, 0, 1],
+    ], dtype=np.float64)
+
+    results = []
+    for det in detections:
+        rvec, tvec = estimate_pose_opencv(det, camera_matrix, tag_size)
+        if rvec is None:
+            continue
+
+        results.append({
+            "id": det["id"],
+            "rvec": rvec,
+            "tvec": tvec,
+        })
+
+        # Draw tag outline
+        corners = det["lb-rb-rt-lt"].astype(int)
+        for i in range(4):
+            cv2.line(
+                image_color,
+                tuple(corners[i]),
+                tuple(corners[(i + 1) % 4]),
+                (0, 255, 0),
+                2,
+            )
+
+        # Draw 3D coordinate axes
+        axis_length = tag_size * 0.5
+        cv2.drawFrameAxes(
+            image_color,
+            camera_matrix,
+            np.zeros(4),  # No distortion
+            rvec,
+            tvec,
+            axis_length,
+        )
+
+        # Draw distance text
+        center = tuple(det["center"].astype(int))
+        distance = np.linalg.norm(tvec)
+        cv2.putText(
+            image_color,
+            f"ID:{det['id']} {distance:.2f}m",
+            (center[0] + 10, center[1] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 0, 0),
+            2,
+        )
+
+        print(f"Tag {det['id']} (OpenCV):")
+        print(f"  Position: x={tvec[0][0]:.3f}m, y={tvec[1][0]:.3f}m, z={tvec[2][0]:.3f}m")
+        print(f"  Distance: {distance:.3f}m")
+
+    return image_color, results
 
 
 # =============================================================================
@@ -433,20 +522,21 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python example.py                     # Run interactive visualization
-  python example.py --example basic     # Run basic detection
-  python example.py --example config    # Run configured detection
-  python example.py --example pose      # Run pose estimation
-  python example.py --example batch     # Process all images in directory
-  python example.py --example families  # Detect multiple tag families
-  python example.py --image photo.jpg   # Use specific image
-  python example.py --list              # List available examples
+  python example.py                        # Run interactive visualization
+  python example.py --example basic        # Run basic detection
+  python example.py --example config       # Run configured detection
+  python example.py --example pose         # Run native pose estimation
+  python example.py --example pose-opencv  # Run OpenCV pose estimation
+  python example.py --example batch        # Process all images in directory
+  python example.py --example families     # Detect multiple tag families
+  python example.py --image photo.jpg      # Use specific image
+  python example.py --list                 # List available examples
         """,
     )
     parser.add_argument(
         "--example",
         "-e",
-        choices=["interactive", "basic", "config", "pose", "batch", "families"],
+        choices=["interactive", "basic", "config", "pose", "pose-opencv", "batch", "families"],
         default="interactive",
         help="Example to run (default: interactive)",
     )
@@ -499,7 +589,8 @@ Available examples:
   interactive  - Visualize detections with OpenCV, navigate with any key, 'q' to quit
   basic        - Minimal detection example, prints results to console
   config       - Detection with custom parameters (threads, decimate, blur)
-  pose         - 3D pose estimation with visualization (use --camera and --tag-size)
+  pose         - Native AprilTag pose estimation (more accurate)
+  pose-opencv  - OpenCV solvePnP pose estimation (simpler, no native dependency)
   batch        - Process all images in a directory
   families     - Detect tags from multiple families in the same image
 
@@ -580,6 +671,38 @@ Pose estimation options:
 
             if results:
                 cv2.imshow("Pose Estimation", image_color)
+                key = cv2.waitKey(0)
+                if key == ord("q"):
+                    break
+            else:
+                print("No tags detected")
+
+        cv2.destroyAllWindows()
+
+    elif args.example == "pose-opencv":
+        # Get camera parameters (estimate from first image if not provided)
+        if args.camera:
+            camera_params = tuple(args.camera)
+        else:
+            # Estimate camera params from image size (rough approximation)
+            sample_image = cv2.imread(str(image_paths[0]), cv2.IMREAD_GRAYSCALE)
+            h, w = sample_image.shape
+            # Assume 60 degree FOV and principal point at center
+            fx = fy = w / (2 * np.tan(np.radians(30)))
+            cx, cy = w / 2, h / 2
+            camera_params = (fx, fy, cx, cy)
+            print(f"Using estimated camera params: fx={fx:.1f}, fy={fy:.1f}, "
+                  f"cx={cx:.1f}, cy={cy:.1f}")
+            print("For accurate results, provide --camera FX FY CX CY\n")
+
+        for image_path in image_paths:
+            print(f"\n=== {image_path.name} ===")
+            image_color, results = visualize_poses_opencv(
+                image_path, camera_params, args.tag_size
+            )
+
+            if results:
+                cv2.imshow("Pose Estimation (OpenCV)", image_color)
                 key = cv2.waitKey(0)
                 if key == ord("q"):
                     break
