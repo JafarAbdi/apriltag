@@ -71,6 +71,33 @@ Returns:
         - "lb-rb-rt-lt" : numpy.ndarray, shape (4, 2), dtype float64
             Corner coordinates in order: left-bottom, right-bottom,
             right-top, left-top. Each row is [x, y].
+
+detector.estimate_tag_pose(detection, info)
+-------------------------------------------
+Estimate 3D pose of a detected tag using native AprilTag algorithm.
+
+This method uses homography decomposition followed by orthogonal iteration
+for accurate pose estimation, and handles pose ambiguity automatically.
+
+Parameters:
+    detection : dict
+        A single detection dictionary from detect().
+    info : dict
+        Detection info with keys:
+        - "tagsize" : float - Physical tag size in meters.
+        - "fx" : float - Focal length x in pixels.
+        - "fy" : float - Focal length y in pixels.
+        - "cx" : float - Principal point x in pixels.
+        - "cy" : float - Principal point y in pixels.
+
+Returns:
+    dict with keys:
+        - "R" : numpy.ndarray, shape (3, 3), dtype float64
+            Rotation matrix from tag frame to camera frame.
+        - "t" : numpy.ndarray, shape (3,), dtype float64
+            Translation vector [x, y, z] in meters.
+        - "e" : float
+            Object-space error of the pose estimate.
 """
 
 import cv2
@@ -161,11 +188,14 @@ def visualize_detections(image_path):
 
 
 # =============================================================================
-# Example 4: Pose Estimation (requires camera calibration)
+# Example 4a: Pose Estimation with OpenCV solvePnP
 # =============================================================================
-def estimate_pose(detection, camera_matrix, tag_size):
+def estimate_pose_opencv(detection, camera_matrix, tag_size):
     """
-    Estimate 3D pose of a detected tag.
+    Estimate 3D pose of a detected tag using OpenCV's solvePnP.
+
+    This is a simple approach that works without the native pose estimation.
+    For better accuracy, use detector.estimate_tag_pose() instead.
 
     Parameters:
         detection : dict
@@ -205,7 +235,153 @@ def estimate_pose(detection, camera_matrix, tag_size):
         dist_coeffs,
     )
 
-    return rvec, tvec if success else (None, None)
+    return (rvec, tvec) if success else (None, None)
+
+
+# =============================================================================
+# Example 4b: Pose Estimation with Native AprilTag Algorithm
+# =============================================================================
+def pose_estimation_example(image_path, camera_params, tag_size=0.1):
+    """
+    Detect tags and estimate their 3D poses using native AprilTag algorithm.
+
+    Parameters:
+        image_path : path-like
+            Path to input image.
+        camera_params : tuple of 4 floats
+            Camera intrinsic parameters (fx, fy, cx, cy) in pixels.
+        tag_size : float
+            Physical size of the tag in meters (default: 0.1m = 10cm).
+
+    Returns:
+        list of dict
+            Each dict contains detection info and pose:
+            - "id": tag ID
+            - "R": 3x3 rotation matrix
+            - "t": translation vector [x, y, z]
+            - "e": pose estimation error
+    """
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    detector = apriltag("tag36h11")
+    detections = detector.detect(image)
+
+    # Build info dict (mirrors C API's apriltag_detection_info_t)
+    fx, fy, cx, cy = camera_params
+    info = {
+        "tagsize": tag_size,
+        "fx": fx,
+        "fy": fy,
+        "cx": cx,
+        "cy": cy,
+    }
+
+    results = []
+    for det in detections:
+        # Use native pose estimation
+        pose = detector.estimate_tag_pose(det, info)
+
+        results.append({
+            "id": det["id"],
+            "R": pose["R"],
+            "t": pose["t"],
+            "e": pose["e"],
+        })
+
+        # Print pose info
+        t = pose["t"]
+        distance = np.linalg.norm(t)
+        print(f"Tag {det['id']}:")
+        print(f"  Position: x={t[0]:.3f}m, y={t[1]:.3f}m, z={t[2]:.3f}m")
+        print(f"  Distance: {distance:.3f}m")
+        print(f"  Error: {pose['e']:.6f}")
+
+    return results
+
+
+def visualize_poses(image_path, camera_params, tag_size=0.1):
+    """
+    Detect tags, estimate poses, and visualize with 3D axes overlay.
+
+    Parameters:
+        image_path : path-like
+            Path to input image.
+        camera_params : tuple of 4 floats
+            Camera intrinsic parameters (fx, fy, cx, cy) in pixels.
+        tag_size : float
+            Physical size of the tag in meters.
+
+    Returns:
+        image_color : numpy.ndarray
+            Image with pose axes drawn.
+        results : list of dict
+            Pose results for each detected tag.
+    """
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    detector = apriltag("tag36h11")
+    detections = detector.detect(image)
+
+    image_color = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    fx, fy, cx, cy = camera_params
+    camera_matrix = np.array([
+        [fx, 0, cx],
+        [0, fy, cy],
+        [0, 0, 1],
+    ], dtype=np.float64)
+
+    # Build info dict (mirrors C API's apriltag_detection_info_t)
+    info = {
+        "tagsize": tag_size,
+        "fx": fx,
+        "fy": fy,
+        "cx": cx,
+        "cy": cy,
+    }
+
+    results = []
+    for det in detections:
+        pose = detector.estimate_tag_pose(det, info)
+        results.append({"id": det["id"], **pose})
+
+        # Draw tag outline
+        corners = det["lb-rb-rt-lt"].astype(int)
+        for i in range(4):
+            cv2.line(
+                image_color,
+                tuple(corners[i]),
+                tuple(corners[(i + 1) % 4]),
+                (0, 255, 0),
+                2,
+            )
+
+        # Convert rotation matrix to Rodrigues vector for cv2.drawFrameAxes
+        rvec, _ = cv2.Rodrigues(pose["R"])
+        tvec = pose["t"].reshape(3, 1)
+
+        # Draw 3D coordinate axes
+        axis_length = tag_size * 0.5
+        cv2.drawFrameAxes(
+            image_color,
+            camera_matrix,
+            np.zeros(4),  # No distortion
+            rvec,
+            tvec,
+            axis_length,
+        )
+
+        # Draw distance text
+        center = tuple(det["center"].astype(int))
+        distance = np.linalg.norm(pose["t"])
+        cv2.putText(
+            image_color,
+            f"ID:{det['id']} {distance:.2f}m",
+            (center[0] + 10, center[1] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 0, 0),
+            2,
+        )
+
+    return image_color, results
 
 
 # =============================================================================
@@ -260,6 +436,7 @@ Examples:
   python example.py                     # Run interactive visualization
   python example.py --example basic     # Run basic detection
   python example.py --example config    # Run configured detection
+  python example.py --example pose      # Run pose estimation
   python example.py --example batch     # Process all images in directory
   python example.py --example families  # Detect multiple tag families
   python example.py --image photo.jpg   # Use specific image
@@ -269,7 +446,7 @@ Examples:
     parser.add_argument(
         "--example",
         "-e",
-        choices=["interactive", "basic", "config", "batch", "families"],
+        choices=["interactive", "basic", "config", "pose", "batch", "families"],
         default="interactive",
         help="Example to run (default: interactive)",
     )
@@ -298,6 +475,21 @@ Examples:
         action="store_true",
         help="List available examples and exit",
     )
+    parser.add_argument(
+        "--tag-size",
+        "-s",
+        type=float,
+        default=0.1,
+        help="Tag size in meters for pose estimation (default: 0.1)",
+    )
+    parser.add_argument(
+        "--camera",
+        "-c",
+        type=float,
+        nargs=4,
+        metavar=("FX", "FY", "CX", "CY"),
+        help="Camera intrinsics: fx fy cx cy (default: estimate from image size)",
+    )
 
     args = parser.parse_args()
 
@@ -307,6 +499,7 @@ Available examples:
   interactive  - Visualize detections with OpenCV, navigate with any key, 'q' to quit
   basic        - Minimal detection example, prints results to console
   config       - Detection with custom parameters (threads, decimate, blur)
+  pose         - 3D pose estimation with visualization (use --camera and --tag-size)
   batch        - Process all images in a directory
   families     - Detect tags from multiple families in the same image
 
@@ -314,6 +507,10 @@ Tag families:
   tag36h11 (recommended), tag36h10, tag25h9, tag16h5,
   tagCircle21h7, tagCircle49h12, tagStandard41h12,
   tagStandard52h13, tagCustom48h12
+
+Pose estimation options:
+  --camera FX FY CX CY  Camera intrinsics (focal length and principal point)
+  --tag-size SIZE       Physical tag size in meters (default: 0.1)
         """)
         exit(0)
 
@@ -358,6 +555,38 @@ Tag families:
             print(f"Found {len(detections)} tags with configured detector")
             for det in detections:
                 print(f"  Tag {det['id']}: margin={det['margin']:.2f}")
+
+    elif args.example == "pose":
+        # Get camera parameters (estimate from first image if not provided)
+        if args.camera:
+            camera_params = tuple(args.camera)
+        else:
+            # Estimate camera params from image size (rough approximation)
+            sample_image = cv2.imread(str(image_paths[0]), cv2.IMREAD_GRAYSCALE)
+            h, w = sample_image.shape
+            # Assume 60 degree FOV and principal point at center
+            fx = fy = w / (2 * np.tan(np.radians(30)))
+            cx, cy = w / 2, h / 2
+            camera_params = (fx, fy, cx, cy)
+            print(f"Using estimated camera params: fx={fx:.1f}, fy={fy:.1f}, "
+                  f"cx={cx:.1f}, cy={cy:.1f}")
+            print("For accurate results, provide --camera FX FY CX CY\n")
+
+        for image_path in image_paths:
+            print(f"\n=== {image_path.name} ===")
+            image_color, results = visualize_poses(
+                image_path, camera_params, args.tag_size
+            )
+
+            if results:
+                cv2.imshow("Pose Estimation", image_color)
+                key = cv2.waitKey(0)
+                if key == ord("q"):
+                    break
+            else:
+                print("No tags detected")
+
+        cv2.destroyAllWindows()
 
     elif args.example == "batch":
         results = batch_process(args.image_dir, family=args.family)
