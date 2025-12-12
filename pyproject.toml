@@ -1,0 +1,19 @@
+[project]
+name            = "apriltag"
+version         = "3.4.5"
+description     = "AprilTag visual fiducial system Python bindings"
+readme          = "README.md"
+authors         = [{ name = "JafarAbdi", email = "jafar.uruc@gmail.com" }]
+requires-python = ">=3.10"
+dependencies    = []
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir       = "build/{wheel_tag}"
+
+[build-system]
+requires      = ["scikit-build-core>=0.10", "nanobind>=2.0.0"]
+build-backend = "scikit_build_core.build"
+
+[dependency-groups]
+dev = ["opencv-python>=4.12.0.88"]
